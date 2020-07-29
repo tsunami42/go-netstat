@@ -62,6 +62,7 @@ var (
 	ErrNotEnoughFields = errors.New("gonetstat: not enough fields in the line")
 )
 
+// parseIPv4 checked convert bigendian ip string to net.IP, 0100007F -> 127.0.0.1
 func parseIPv4(s string) (net.IP, error) {
 	v, err := strconv.ParseUint(s, 16, 32)
 	if err != nil {
@@ -114,6 +115,7 @@ func parseAddr(s string) (*SockAddr, error) {
 	return &SockAddr{IP: ip, Port: uint16(v)}, nil
 }
 
+// parseSocktab pasre files under /proc/net/
 func parseSocktab(r io.Reader, accept AcceptFn) ([]SockTabEntry, error) {
 	br := bufio.NewScanner(r)
 	tab := make([]SockTabEntry, 0, 4)
@@ -160,13 +162,6 @@ func parseSocktab(r io.Reader, accept AcceptFn) ([]SockTabEntry, error) {
 	return tab, br.Err()
 }
 
-type procFd struct {
-	base  string
-	pid   int
-	sktab []SockTabEntry
-	p     *Process
-}
-
 const sockPrefix = "socket:["
 
 func getProcName(s []byte) string {
@@ -184,65 +179,14 @@ func getProcName(s []byte) string {
 	return string(s[i+1 : j])
 }
 
-func (p *procFd) iterFdDir() {
-	// link name is of the form socket:[5860846]
-	fddir := path.Join(p.base, "/fd")
-	fi, err := ioutil.ReadDir(fddir)
-	if err != nil {
-		return
-	}
-	var buf [128]byte
-
-	for _, file := range fi {
-		fd := path.Join(fddir, file.Name())
-		lname, err := os.Readlink(fd)
-		if err != nil || !strings.HasPrefix(lname, sockPrefix) {
-			continue
-		}
-
-		for i := range p.sktab {
-			sk := &p.sktab[i]
-			ss := sockPrefix + sk.ino + "]"
-			if ss != lname {
-				continue
-			}
-			if p.p == nil {
-				stat, err := os.Open(path.Join(p.base, "stat"))
-				if err != nil {
-					return
-				}
-				n, err := stat.Read(buf[:])
-				stat.Close()
-				if err != nil {
-					return
-				}
-				z := bytes.SplitN(buf[:n], []byte(" "), 3)
-				name := getProcName(z[1])
-				p.p = &Process{p.pid, name}
-			}
-			sk.Process = p.p
-		}
-	}
-}
-
 func extractProcInfo(sktab []SockTabEntry) {
-	const basedir = "/proc"
-	fi, err := ioutil.ReadDir(basedir)
+	cache, err := inodeCacheLoad()
 	if err != nil {
 		return
 	}
-
-	for _, file := range fi {
-		if !file.IsDir() {
-			continue
-		}
-		pid, err := strconv.Atoi(file.Name())
-		if err != nil {
-			continue
-		}
-		base := path.Join(basedir, file.Name())
-		proc := procFd{base: base, pid: pid, sktab: sktab}
-		proc.iterFdDir()
+	for idx := range sktab {
+		tab := &sktab[idx]
+		tab.Process = cache[tab.ino]
 	}
 }
 
@@ -259,6 +203,66 @@ func doNetstat(path string, fn AcceptFn) ([]SockTabEntry, error) {
 	}
 	extractProcInfo(tabs)
 	return tabs, nil
+}
+
+type inodeCache map[string][]*Process
+
+func inodeCacheLoad() (InodeCache inodeCache, err error) {
+	InodeCache = make(inodeCache)
+
+	const basedir = "/proc"
+	procFiles, err := ioutil.ReadDir(basedir)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, file := range procFiles {
+		if !file.IsDir() {
+			continue
+		}
+		// look if it's a pid dir
+		pid, err := strconv.Atoi(file.Name())
+		if err != nil {
+			continue
+		}
+		fddir := path.Join(basedir, file.Name(), "/fd")
+		fdFiles, readFddirErr := ioutil.ReadDir(fddir)
+		if readFddirErr != nil {
+			continue
+		}
+		for _, fdFile := range fdFiles {
+			fd := path.Join(fddir, fdFile.Name())
+			lname, err := os.Readlink(fd)
+			if err != nil {
+				continue
+			}
+			var inode string
+			if inode = extraceSocketInode(lname); inode == "" {
+				continue
+			}
+			name, err := ioutil.ReadFile(path.Join(basedir, file.Name(), "comm"))
+			if err != nil {
+				continue
+			}
+			InodeCache[inode] = append(InodeCache[inode], &Process{
+				Pid:  pid,
+				Name: strings.TrimSpace(string(name)),
+			})
+		}
+	}
+	return InodeCache, nil
+}
+
+func extraceSocketInode(socketStr string) (inode string) {
+	if !strings.HasPrefix(socketStr, sockPrefix) {
+		return ""
+	}
+	start := strings.IndexRune(socketStr, '[')
+	end := strings.IndexRune(socketStr, ']')
+	if start > 0 && end > start+1 {
+		return socketStr[start+1 : end]
+	}
+	return ""
 }
 
 // TCPSocks returns a slice of active TCP sockets containing only those

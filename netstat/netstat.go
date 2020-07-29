@@ -22,7 +22,7 @@ type SockTabEntry struct {
 	RemoteAddr *SockAddr
 	State      SkState
 	UID        uint32
-	Process    *Process
+	Process    []*Process
 }
 
 // Process holds the PID and process name to which each socket belongs

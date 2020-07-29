@@ -476,7 +476,7 @@ func toSockTabEntry(ws winSockEnt, snp ProcessSnapshot) SockTabEntry {
 		LocalAddr:  ws.LocalSock(),
 		RemoteAddr: ws.RemoteSock(),
 		State:      ws.SockState(),
-		Process:    ws.Process(snp),
+		Process:    []*Process{ws.Process(snp)},
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 
 	"github.com/cakturk/go-netstat/netstat"
 )
@@ -114,12 +115,21 @@ func displaySockInfo(proto string, s []netstat.SockTabEntry) {
 	}
 
 	for _, e := range s {
-		p := ""
-		if e.Process != nil {
-			p = e.Process.String()
-		}
 		saddr := lookup(e.LocalAddr)
 		daddr := lookup(e.RemoteAddr)
-		fmt.Printf("%-5s %-23.23s %-23.23s %-12s %-16s\n", proto, saddr, daddr, e.State, p)
+		if e.Process != nil {
+			var processStrs []string
+			for _, process := range e.Process {
+				if process == nil {
+					continue
+				}
+				processStrs = append(processStrs, process.String())
+			}
+			if len(processStrs) > 0 {
+				fmt.Printf("%-5s %-23.23s %-23.23s %-12s %-16s\n", proto, saddr, daddr, e.State, strings.Join(processStrs, ","))
+			}
+
+		}
+
 	}
 }
